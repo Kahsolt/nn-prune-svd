@@ -7,7 +7,7 @@ from data import get_dataloader, normalize
 from utils import *
 
 
-def pgd(model:Model, X:Tensor, Y:Tensor, eps:float=0.03, alpha:float=0.001, steps:int=40) -> Tensor:
+def pgd(model:Model, X:Tensor, Y:Tensor, eps:float=0.03, alpha:float=0.001, steps:int=40, log:bool=True) -> Tensor:
   X = X.clone().detach()
   Y = Y.clone().detach()
 
@@ -15,7 +15,7 @@ def pgd(model:Model, X:Tensor, Y:Tensor, eps:float=0.03, alpha:float=0.001, step
   AX = AX + torch.empty_like(AX).uniform_(-eps, eps)
   AX = torch.clamp(AX, min=0.0, max=1.0).detach()
 
-  for _ in tqdm(range(steps)):
+  for _ in (tqdm if log else list)(range(steps)):
     AX.requires_grad = True
 
     with torch.enable_grad():
@@ -32,19 +32,25 @@ def pgd(model:Model, X:Tensor, Y:Tensor, eps:float=0.03, alpha:float=0.001, step
   return AX
 
 
-def prune(args, model:Model) -> Model:
-  def prune_w(weight:Tensor):
-    # TODO: 
-    # 1. 用 torch.linalg.svd 分解矩阵 weight = U @ S @ V
+def prune(args, model:Model) -> int:
+  def prune_w(weight:Tensor) -> Tensor:
+    # 1. 用 torch.svd 分解矩阵 weight = U @ S @ V
     # 2. 舍弃最后 args.r_w 占比个较小的奇异值和对应的向量
     # 3. 返回低秩矩阵 weight' = U' @ S' @ V'
+    if args.r_w > 0.0:
+      U, S, V = torch.svd(weight, compute_uv=True)
+      keep = round(len(S) * (1 - args.r_w))
+      weight = U[:, :keep] @ torch.diag(S[:keep]) @ V.T[:keep, :]
     return weight
 
-  def prune_b(bias:Tensor):
-    # TODO: 
+  def prune_b(bias:Tensor) -> Tensor:
     # 1. 将 bias 中绝对值小于 args.r_b 的项直接改成 0.0
-    # 1. 将 bias 进行精度舍入到小数点吼 args.n_prec 位
-    # 2. 返回稀疏向量 bias'
+    # 2. 将 bias 进行精度舍入到小数点吼 args.n_prec 位
+    # 3. 返回稀疏向量 bias'
+    if args.r_b > 0.0:
+      bias = bias * (torch.abs(bias) > args.r_b)
+    if args.n_prec > 0:
+      bias = bias.round(args.n_prec)
     return bias
 
   named_layers = get_linear_layers(model)
@@ -58,7 +64,7 @@ def prune(args, model:Model) -> Model:
     if hasattr(layer, 'bias'):
       layer.bias = Parameter(prune_b(layer.bias))
 
-  return model
+  return n_layers
 
 
 @torch.inference_mode()
@@ -100,7 +106,7 @@ def test_atk(args, model:Model, dataloader:DataLoader, show:bool=False) -> tuple
       imshow(X, AX)
 
     with torch.inference_mode():
-      pred    = model(normalize(X)) .argmax(dim=-1)
+      pred    = model(normalize(X )).argmax(dim=-1)
       pred_AX = model(normalize(AX)).argmax(dim=-1)
 
     total    += len(pred)
@@ -121,17 +127,28 @@ def test_atk(args, model:Model, dataloader:DataLoader, show:bool=False) -> tuple
   ]
 
 
-def run(args):
+@timer
+def run(args, save_rec:bool=True) -> Record:
   ''' Model '''
   model = get_model(args.model)
 
   ''' Prune '''
-  if any([args.r_w > 0.0, args.r_b > 0.0, args.n_prec > 0]):
-    prune(args, model)
+  is_prune = any([args.r_w > 0.0, args.r_b > 0.0, args.n_prec > 0])
+  if is_prune:
+    n_layers_affected = prune(args, model)
 
   ''' Data '''
   dataloader = get_dataloader(args.batch_size, args.limit, args.shuffle)
 
+  ''' Record '''
+  rec = {
+    'ts': time(),
+    'cmd': ' '.join(sys.argv),
+    'args': vars(args),
+  }
+  if is_prune: rec['n_layers'] = n_layers_affected
+
+  ''' Run '''
   if args.atk:
     ''' Attack '''
     acc, racc, pcr, asr = test_atk(args, model, dataloader, show=args.show)
@@ -139,13 +156,24 @@ def run(args):
     print(f'Remnant Accuracy:       {racc:.2%}')
     print(f'Prediction Change Rate: {pcr:.2%}')
     print(f'Attack Success Rate:    {asr:.2%}')
+    rec['acc'] = acc
+    rec['racc'] = racc
+    rec['pcr'] = pcr
+    rec['asr'] = asr
   else:
     ''' Test '''
     acc = test(model, dataloader)
     print(f'Clean Accuracy: {acc:.2%}')
+    rec['acc'] = acc
+
+  if save_rec:
+    db = db_load()
+    db_add(db, args.model, rec)
+    db_save(db)
+  return rec
 
 
-if __name__ == '__main__':
+def get_args():
   parser = ArgumentParser()
   # model & data
   parser.add_argument('-M', '--model', default='resnet18', choices=MODELS, help='model name')
@@ -161,8 +189,11 @@ if __name__ == '__main__':
   parser.add_argument('--eps',   type=float, default=8/255, help='PGD total threshold')
   parser.add_argument('--alpha', type=float, default=1/255, help='PGD step size')
   parser.add_argument('--step',  type=int,   default=10,    help='PGD step count')
-  # debug
-  parser.add_argument('--show',    action='store_true', help='debug visualize & inspect')
-  args = parser.parse_args()
+  # misc
+  parser.add_argument('--seed', default=114514, type=int, help='randseed')
+  parser.add_argument('--show', action='store_true', help='debug visualize & inspect')
+  return parser.parse_args()
 
-  run(args)
+
+if __name__ == '__main__':
+  run(get_args())

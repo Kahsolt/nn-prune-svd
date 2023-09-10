@@ -5,8 +5,12 @@
 from __future__ import annotations
 import warnings ; warnings.simplefilter('ignore')
 
-from argparse import ArgumentParser, Namespace
+import sys
+from time import time
+import json
+import random
 from pathlib import Path
+from argparse import ArgumentParser, Namespace
 from typing import *
 
 import torch
@@ -18,20 +22,80 @@ from torch.nn import Module
 from torch.nn.parameter import Parameter
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
+import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 BASE_PATH = Path(__file__).parent.absolute()
 DATA_PATH = BASE_PATH / 'data'
+DB_FILE = BASE_PATH / 'run.json'
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 cpu = 'cpu'   # for qt model
 
-if device == 'cuda':
-  torch.backends.cudnn.enabled = True
-  torch.backends.cudnn.benchmark = True
-
 Model = Module
+
+def seed_everything(seed:int) -> int:
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  torch.cuda.manual_seed(seed)
+  torch.cuda.manual_seed_all(seed)
+
+  if device == 'cuda':
+    torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.benchmark = False
+
+def timer(fn):
+  def wrapper(*args, **kwargs):
+    start = time()
+    r = fn(*args, **kwargs)
+    end = time()
+    print(f'[Timer]: {fn.__name__} took {end - start:.3f}s')
+    return r
+  return wrapper
+
+def gc_everything():
+  for _ in range(2):
+    gc.collect()
+    torch.cuda.ipc_collect()
+    torch.cuda.empty_cache()
+
+
+Record = Dict[str, Any]
+DB = Dict[str, List[Record]]
+
+'''
+{
+  'model': [{
+    ts: int
+    cmd: str
+    args: {}
+    n_layers: int
+    acc: float
+    racc: float
+    pcr: float
+    asr: float
+  }]
+}
+'''
+
+def db_load() -> DB:
+  if not DB_FILE.exists():
+    return {}
+  else:
+    with open(DB_FILE, 'r', encoding='utf-8') as fh:
+      return json.load(fh)
+
+def db_save(db:DB):
+  with open(DB_FILE, 'w', encoding='utf-8') as fh:
+    json.dump(db, fh, indent=2, ensure_ascii=False)
+
+def db_add(db:DB, model:str, rec:Record):
+  if model in db:
+    db[model].append(rec)
+  else:
+    db[model] = [rec]
 
 
 def imshow(X:Tensor, AX:Tensor, title:str=''):
