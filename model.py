@@ -64,10 +64,8 @@ MODELS = [
   'mnasnet1_3',
 
   'mobilenet_v2',
-  'mobilenet_v3_large',
   'mobilenet_v3_small',
-  'mobilenetv2',
-  'mobilenetv3',
+  'mobilenet_v3_large',
 
   'squeezenet1_0',
   'squeezenet1_1',
