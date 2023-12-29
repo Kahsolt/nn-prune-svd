@@ -52,7 +52,7 @@ def run_grid(args):
   sns.heatmap(res, vmin=0.0, vmax=1.0, annot=True, cbar=True)
   plt.xticks(range(len(R_Ws)), R_Ws)
   plt.yticks(range(len(MODELS)), MODELS)
-  plt.savefig(f'run_grid.png')
+  plt.savefig(IMG_PATH / 'run_grid.png')
 
 
 if __name__ == '__main__':

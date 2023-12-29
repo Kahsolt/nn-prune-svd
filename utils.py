@@ -28,7 +28,8 @@ from tqdm import tqdm
 
 BASE_PATH = Path(__file__).parent.absolute()
 DATA_PATH = BASE_PATH / 'data'
-DB_FILE = BASE_PATH / 'run.json'
+IMG_PATH = BASE_PATH / 'img' ; IMG_PATH.mkdir(exist_ok=True)
+DB_FILE = IMG_PATH / 'run.json'
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 cpu = 'cpu'   # for qt model
